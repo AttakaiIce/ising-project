@@ -18,3 +18,17 @@ using IsingProject
     # 要素の型が Int であることの確認
     @test eltype(config) == Int
 end
+
+@testset "IsingProject Magnetization Tests" begin
+    @test magnetization([1 -1; 1 1]) == 2
+    @test magnetization(fill(-1, 3, 4)) == -12
+end
+
+@testset "IsingProject Energy Tests" begin
+    spins_all = fill(1, 2, 2)
+    @test energy(spins_all) == -8
+    @test energy(spins_all; h = 0.5) == -10.0
+
+    spins_alt = [1 -1; -1 1]
+    @test energy(spins_alt) == 8
+end
