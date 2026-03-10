@@ -135,8 +135,7 @@ function delta_energy_flip(spins::AbstractMatrix{<:Integer}, i::Int, j::Int; J::
     nrows::Int, ncols::Int = size(spins)
     @boundscheck checkbounds(spins, i, j)
 
-    T = promote_type(eltype(spins), typeof(J), typeof(h))
-    s::T = spins[i, j]
+    s::Int = spins[i, j]
 
     im::Int = (i == 1) ? nrows : (i - 1)
     ip::Int = (i == nrows) ? 1 : (i + 1)
@@ -144,8 +143,9 @@ function delta_energy_flip(spins::AbstractMatrix{<:Integer}, i::Int, j::Int; J::
     jp::Int = (j == ncols) ? 1 : (j + 1)
 
     @inbounds begin
-        sum_neighbors::T = spins[im, j] + spins[ip, j] + spins[i, jm] + spins[i, jp]
-        return 2 * s * (T(J) * sum_neighbors + T(h))
+        sum_neighbors::Int = spins[im, j] + spins[ip, j] + spins[i, jm] + spins[i, jp]
+        # J, h が Float64 なら ΔE も Float64（またはそれに準ずるReal）になる
+        return 2 * s * (J * sum_neighbors + h)
     end
 end
 
@@ -179,7 +179,17 @@ function metropolis_step!(
     i::Int = rand(rng, 1:nrows)
     j::Int = rand(rng, 1:ncols)
 
-    ΔE = delta_energy_flip(spins, i, j; J = J, h = h)
+    im::Int = (i == 1) ? nrows : (i - 1)
+    ip::Int = (i == nrows) ? 1 : (i + 1)
+    jm::Int = (j == 1) ? ncols : (j - 1)
+    jp::Int = (j == ncols) ? 1 : (j + 1)
+
+    @inbounds begin
+        s::Int = spins[i, j]
+        sum_neighbors::Int = spins[im, j] + spins[ip, j] + spins[i, jm] + spins[i, jp]
+        ΔE = 2 * s * (J * sum_neighbors + h)
+    end
+
     accepted::Bool = (ΔE <= 0) || (rand(rng) < exp(-beta * ΔE))
 
     if accepted
@@ -211,12 +221,48 @@ function metropolis_sweep!(
     h::Real = 0,
     rng::AbstractRNG = Random.default_rng(),
 )::Int
-    nsteps::Int = length(spins)
+    nrows::Int, ncols::Int = size(spins)
+    nsteps::Int = nrows * ncols
     n_accepted::Int = 0
 
+    # h=0 のイジング（最近接のみ）では ΔE ∈ { -8J, -4J, 0, 4J, 8J } となるので、
+    # ΔE>0 の受容確率は p4, p8 の2種類だけを参照すればよい
+    use_lookup::Bool = (h == 0)
+    Jabs = use_lookup ? abs(J) : J
+    p4 = use_lookup ? exp(-beta * (4 * Jabs)) : 0.0
+    p8 = use_lookup ? exp(-beta * (8 * Jabs)) : 0.0
+
     for _ in 1:nsteps
-        accepted, _ = metropolis_step!(spins, beta; J = J, h = h, rng = rng)
-        n_accepted += accepted ? 1 : 0
+        i::Int = rand(rng, 1:nrows)
+        j::Int = rand(rng, 1:ncols)
+
+        # ここはホットパスなので、ΔE は局所的に直接計算する
+        im::Int = (i == 1) ? nrows : (i - 1)
+        ip::Int = (i == nrows) ? 1 : (i + 1)
+        jm::Int = (j == 1) ? ncols : (j - 1)
+        jp::Int = (j == ncols) ? 1 : (j + 1)
+
+        @inbounds begin
+            s::Int = spins[i, j]
+            sum_neighbors::Int = spins[im, j] + spins[ip, j] + spins[i, jm] + spins[i, jp]
+            ΔE = 2 * s * (J * sum_neighbors + h)
+        end
+
+        accepted::Bool = if ΔE <= 0
+            true
+        elseif use_lookup
+            # h=0 のとき、ΔE>0 は 4J か 8J のみ
+            # sum_neighbors*s が 2 なら ΔE=4J、4 なら ΔE=8J
+            ss::Int = s * sum_neighbors
+            (abs(ss) == 2) ? (rand(rng) < p4) : (rand(rng) < p8)
+        else
+            rand(rng) < exp(-beta * ΔE)
+        end
+
+        if accepted
+            @inbounds spins[i, j] = -spins[i, j]
+            n_accepted += 1
+        end
     end
 
     return n_accepted
